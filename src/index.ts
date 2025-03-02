@@ -1,11 +1,18 @@
-//import elysia
 import { Elysia } from 'elysia';
+import { cors } from '@elysiajs/cors'
 
 //import routes
 import Routes from './routes';
 
 //initiate elysia
-const app = new Elysia();
+const app = new Elysia()
+  // Add CORS middleware
+  .use(cors({
+    origin: ['http://localhost:4321'], // Allow your frontend origin
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+  }));
 
 //route home
 app.get('/', () => 'Hello Elysia!');
