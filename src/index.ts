@@ -8,7 +8,7 @@ import Routes from './routes';
 const app = new Elysia()
   // Add CORS middleware
   .use(cors({
-    origin: ['http://localhost:4321'], // Allow your frontend origin
+    origin: ['http://localhost:4321', 'http://localhost:5173'], // Allow your frontend origin
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
