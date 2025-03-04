@@ -119,13 +119,18 @@ export async function createPost(options: { title: string; content: string; cove
       }
     }
 
-    //create data post
-    const post = await prisma.post.create({
-      data: {
-        title,
-        content,
-        coverImage: coverImagePath,
-      },
+    // Use transaction to ensure consistency
+    const post = await prisma.$transaction(async (tx) => {
+      return await tx.post.create({
+        data: {
+          title,
+          content,
+          coverImage: coverImagePath,
+        },
+      });
+    }, {
+      // Set transaction timeout higher than the default
+      timeout: 10000 // 10 seconds
     });
 
     //return response json
@@ -196,51 +201,59 @@ export async function updatePost(id: string, options: { title?: string; content?
     console.log('Updating post ID:', postId);
     console.log('Cover image received for update:', coverImage ? 'Yes' : 'No');
     
-    // Check if post exists
-    const existingPost = await prisma.post.findUnique({
-      where: { id: postId },
-    });
+    // Use transaction with retry logic
+    return await retryTransaction(async () => {
+      // Check if post exists - inside transaction to prevent race conditions
+      const existingPost = await prisma.post.findUnique({
+        where: { id: postId },
+      });
 
-    if (!existingPost) {
-      return {
-        success: false,
-        message: "Post not found",
-        data: null
-      };
-    }
-    
-    // Save new file if present
-    let coverImagePath;
-    if (coverImage) {
-      try {
-        coverImagePath = await saveFile(coverImage);
-        console.log('New cover image saved at path:', coverImagePath);
-      } catch (fileError) {
-        console.error('Error saving file during post update:', fileError);
+      if (!existingPost) {
         return {
           success: false,
-          message: `Error saving file: ${fileError}`,
+          message: "Post not found",
           data: null
         };
       }
-    }
+      
+      // Save new file if present
+      let coverImagePath;
+      if (coverImage) {
+        try {
+          coverImagePath = await saveFile(coverImage);
+          console.log('New cover image saved at path:', coverImagePath);
+        } catch (fileError) {
+          console.error('Error saving file during post update:', fileError);
+          return {
+            success: false,
+            message: `Error saving file: ${fileError}`,
+            data: null
+          };
+        }
+      }
 
-    // Update post with prisma
-    const post = await prisma.post.update({
-      where: { id: postId },
-      data: {
-        ...(title ? { title } : {}),
-        ...(content ? { content } : {}),
-        ...(coverImagePath ? { coverImage: coverImagePath } : {}),
-      },
-    });
+      // Update post with prisma using transaction
+      const post = await prisma.$transaction(async (tx) => {
+        return await tx.post.update({
+          where: { id: postId },
+          data: {
+            ...(title ? { title } : {}),
+            ...(content ? { content } : {}),
+            ...(coverImagePath ? { coverImage: coverImagePath } : {}),
+          },
+        });
+      }, { 
+        timeout: 10000, // 10 seconds
+        isolationLevel: 'ReadCommitted' // Less restrictive isolation level
+      });
 
-    // Return response json
-    return {
-      success: true,
-      message: "Post Updated Successfully!",
-      data: post,
-    }
+      // Return response json
+      return {
+        success: true,
+        message: "Post Updated Successfully!",
+        data: post,
+      };
+    }, 3); // Retry 3 times
   } catch (e) {
     console.error(`Error updating post: ${e}`);
     return {
@@ -259,30 +272,35 @@ export async function deletePost(id: string) {
     // Convert id to number
     const postId = parseInt(id);
 
-    // Check if post exists
-    const existingPost = await prisma.post.findUnique({
-      where: { id: postId },
-    });
+    // Use transaction for delete
+    return await prisma.$transaction(async (tx) => {
+      // Check if post exists
+      const existingPost = await tx.post.findUnique({
+        where: { id: postId },
+      });
 
-    if (!existingPost) {
+      if (!existingPost) {
+        return {
+          success: false,
+          message: "Post not found",
+          data: null
+        };
+      }
+
+      // Delete post with prisma
+      await tx.post.delete({
+        where: { id: postId },
+      });
+
+      // Return response json
       return {
-        success: false,
-        message: "Post not found",
+        success: true,
+        message: "Post Deleted Successfully!",
         data: null
       };
-    }
-
-    // Delete post with prisma
-    await prisma.post.delete({
-      where: { id: postId },
+    }, {
+      timeout: 5000 // 5 seconds
     });
-
-    // Return response json
-    return {
-      success: true,
-      message: "Post Deleted Successfully!",
-      data: null
-    }
   } catch (e) {
     console.error(`Error deleting post: ${e}`);
     return {
@@ -291,4 +309,35 @@ export async function deletePost(id: string) {
       data: null
     };
   }
+}
+
+// Helper function to retry transactions in case of lock timeouts
+async function retryTransaction<T>(
+  fn: () => Promise<T>,
+  retries = 3,
+  delay = 500
+): Promise<T> {
+  let lastError: any;
+  
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      console.log(`Transaction attempt ${attempt + 1} failed. Retrying in ${delay}ms...`);
+      
+      // Only retry on lock timeout errors
+      if (!error.message?.includes('Lock wait timeout exceeded')) {
+        throw error;
+      }
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      // Increase delay exponentially for next attempt
+      delay *= 2;
+    }
+  }
+  
+  throw lastError;
 }
