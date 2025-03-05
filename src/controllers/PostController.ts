@@ -40,51 +40,25 @@ async function saveFile(file: any) {
       await mkdir(uploadDir, { recursive: true });
     }
     
-    // Generate unique filename with original extension if possible
-    const originalName = file.name || 'upload';
-    const fileName = `${Date.now()}-${originalName}`;
+    // Generate unique filename
+    const fileName = `${Date.now()}-${file.name}`;
     const filePath = join(uploadDir, fileName);
     
     // Log file saving location for debugging
     console.log('Saving file to:', filePath);
+    console.log('File object:', file);
     
-    // Check if file has buffer property
-    if (file.buffer) {
-      await writeFile(filePath, file.buffer);
-    } 
-    // Check if file has arrayBuffer method (File/Blob object)
-    else if (typeof file.arrayBuffer === 'function') {
+    // Handle file data
+    if (file.arrayBuffer) {
       const buffer = await file.arrayBuffer();
       await writeFile(filePath, Buffer.from(buffer));
-    }
-    // Check if file has data property
-    else if (file.data) {
-      // If data is already a Buffer
-      if (Buffer.isBuffer(file.data)) {
-        await writeFile(filePath, file.data);
-      } 
-      // If data is a string
-      else if (typeof file.data === 'string') {
-        // If it's a base64 data URL
-        if (file.data.startsWith('data:')) {
-          const base64Data = file.data.split(',')[1];
-          await writeFile(filePath, Buffer.from(base64Data, 'base64'));
-        } else {
-          await writeFile(filePath, file.data);
-        }
-      } 
-      // If data is an ArrayBuffer or similar
-      else if (file.data instanceof ArrayBuffer || 
-               (typeof file.data === 'object' && file.data !== null)) {
-        await writeFile(filePath, Buffer.from(file.data));
-      } else {
-        throw new Error('Unsupported file data format');
-      }
+    } else if (file.buffer) {
+      await writeFile(filePath, file.buffer);
     } else {
-      throw new Error('No valid file data found');
+      throw new Error('Invalid file format');
     }
     
-    // Return relative path to be stored in database - just the filename
+    // Return path relative to uploads directory
     return `/uploads/${fileName}`;
   } catch (error) {
     console.error('Error saving file:', error);
@@ -97,53 +71,47 @@ async function saveFile(file: any) {
  */
 export async function createPost(options: { title: string; content: string; coverImage?: any }) {
   try {
-    //get title, content, and coverImage
     const { title, content, coverImage } = options;
     
-    console.log('Creating post with title:', title);
-    console.log('Cover image received:', coverImage ? 'Yes' : 'No');
+    console.log('Creating post with data:', { title, content, coverImage: coverImage ? 'present' : 'not present' });
     
     // Save file if present
     let coverImagePath = null;
     if (coverImage) {
       try {
         coverImagePath = await saveFile(coverImage);
-        console.log('Cover image saved at path:', coverImagePath);
+        console.log('Cover image saved at:', coverImagePath);
       } catch (fileError) {
-        console.error('Error saving file during post creation:', fileError);
+        console.error('Error saving file:', fileError);
         return {
           success: false,
-          message: `Error saving file: ${fileError}`,
+          message: `Error saving file: ${fileError.message}`,
           data: null
         };
       }
     }
 
-    // Use transaction to ensure consistency
-    const post = await prisma.$transaction(async (tx) => {
-      return await tx.post.create({
-        data: {
-          title,
-          content,
-          coverImage: coverImagePath,
-        },
-      });
-    }, {
-      // Set transaction timeout higher than the default
-      timeout: 10000 // 10 seconds
+    // Create post
+    const post = await prisma.post.create({
+      data: {
+        title,
+        content,
+        coverImage: coverImagePath,
+      },
     });
 
-    //return response json
+    console.log('Post created successfully:', post);
+
     return {
       success: true,
       message: "Post Created Successfully!",
       data: post,
-    }
+    };
   } catch (e) {
-    console.error(`Error creating post: ${e}`);
+    console.error('Error creating post:', e);
     return {
       success: false,
-      message: `Error creating post: ${e}`,
+      message: e instanceof Error ? e.message : 'Error creating post',
       data: null
     };
   }
